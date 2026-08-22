@@ -13,6 +13,8 @@ def test_coding_task_has_safe_defaults():
     assert task.last_failure_reason is None
     assert task.blocked_by == []
     assert task.worktree is None
+    assert task.review_snapshot is None
+    assert task.rollback_snapshot is None
     assert task.agent_type is None
     assert task.artifact is None
 

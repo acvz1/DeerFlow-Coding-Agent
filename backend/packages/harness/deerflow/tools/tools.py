@@ -13,6 +13,7 @@ from deerflow.tools.builtins import (
     list_uploaded_files,
     present_file_tool,
     recover_coding_task,
+    restore_coding_checkpoint,
     review_skill_package,
     submit_task_plan,
     task_tool,
@@ -33,6 +34,7 @@ SUBAGENT_TOOLS = [
     submit_task_plan,
     create_coding_worktree,
     recover_coding_task,
+    restore_coding_checkpoint,
     continue_after_review,
     task_tool,
     # task_status_tool is no longer exposed to LLM (backend handles polling internally)

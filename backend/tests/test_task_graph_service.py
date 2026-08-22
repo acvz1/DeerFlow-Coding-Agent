@@ -96,6 +96,31 @@ def test_claim_rejects_wrong_specialized_agent(task_graph):
         graph.claim("task-1", "code-implementer")
 
 
+def test_claim_allows_only_one_implementer_at_a_time(task_graph):
+    graph, store = task_graph
+    store.save(
+        CodingTask(
+            id="implement-1",
+            subject="First implementation",
+            description="Change the first feature",
+            agent_type="code-implementer",
+        )
+    )
+    store.save(
+        CodingTask(
+            id="implement-2",
+            subject="Second implementation",
+            description="Change the second feature",
+            agent_type="code-implementer",
+        )
+    )
+
+    graph.claim("implement-1", "code-implementer")
+
+    with pytest.raises(ValueError, match="another code-implementer"):
+        graph.claim("implement-2", "code-implementer")
+
+
 def test_claim_rejects_non_pending_or_blocked_task(task_graph):
     graph, store = task_graph
     store.save(
@@ -285,6 +310,36 @@ def test_bind_worktree_persists_one_worktree_for_the_whole_pipeline(task_graph):
     assert [task.worktree for task in bound] == ["coding-run"] * 3
     assert all(task.status is TaskStatus.pending for task in bound)
     assert [store.load(task.id).worktree for task in tasks] == ["coding-run"] * 3
+
+
+def test_review_snapshot_is_bound_only_to_direct_pending_reviewers(task_graph):
+    graph, store = task_graph
+    store.save(CodingTask(id="impl", subject="Implement", description="Implement", agent_type="code-implementer", worktree="coding-run"))
+    store.save(CodingTask(id="review", subject="Review", description="Review", blocked_by=["impl"], agent_type="code-reviewer", worktree="coding-run"))
+    store.save(CodingTask(id="later", subject="Later", description="Later", blocked_by=["review"], agent_type="code-reviewer", worktree="coding-run"))
+
+    reviewer_ids = graph.get_direct_pending_reviewer_ids("impl")
+    bound = graph.bind_review_snapshot(reviewer_ids, "coding-review-snapshot")
+
+    assert reviewer_ids == ["review"]
+    assert [task.id for task in bound] == ["review"]
+    assert store.load("review").worktree == "coding-run"
+    assert store.load("review").review_snapshot == "coding-review-snapshot"
+    assert store.load("later").review_snapshot is None
+
+
+def test_rollback_snapshot_binds_only_pending_fix_pipeline_tasks(task_graph):
+    graph, store = task_graph
+    tasks = [
+        CodingTask(id="reanalyze", subject="Reanalyze", description="Reanalyze"),
+        CodingTask(id="fix", subject="Fix", description="Fix"),
+    ]
+    graph.add_tasks(tasks)
+
+    bound = graph.bind_rollback_snapshot([task.id for task in tasks], "checkpoint-1")
+
+    assert [task.rollback_snapshot for task in bound] == ["checkpoint-1", "checkpoint-1"]
+    assert [store.load(task.id).rollback_snapshot for task in tasks] == ["checkpoint-1", "checkpoint-1"]
 
 
 def test_bind_worktree_validates_the_whole_batch_before_persisting(task_graph):

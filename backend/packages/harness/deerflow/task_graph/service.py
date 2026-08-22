@@ -54,6 +54,32 @@ class TaskGraph:
             self.store.save(task)
         return task_list
 
+    def get_direct_pending_reviewer_ids(self, task_id: str) -> list[str]:
+        """返回直接依赖该实现任务、且尚未领取的 Reviewer 任务。"""
+        return [task.id for task in self.store.list_all() if task.status is TaskStatus.pending and task.agent_type == "code-reviewer" and task_id in task.blocked_by]
+
+    def bind_review_snapshot(self, task_ids: list[str], snapshot: str) -> list[CodingTask]:
+        """把稳定快照绑定给下游 Reviewer，不覆盖其主 Worktree 归属。"""
+        reviewers = [self.store.load(task_id) for task_id in task_ids]
+        for task in reviewers:
+            if task.status is not TaskStatus.pending or task.agent_type != "code-reviewer":
+                raise ValueError("review snapshot can only bind pending code-reviewer tasks")
+        for task in reviewers:
+            task.review_snapshot = snapshot
+            self.store.save(task)
+        return reviewers
+
+    def bind_rollback_snapshot(self, task_ids: list[str], snapshot: str) -> list[CodingTask]:
+        """把 Fix 前 checkpoint 绑定给任务；恢复时仍以原 Worktree 为目标。"""
+        tasks = [self.store.load(task_id) for task_id in task_ids]
+        for task in tasks:
+            if task.status is not TaskStatus.pending:
+                raise ValueError("rollback snapshot can only bind pending tasks")
+        for task in tasks:
+            task.rollback_snapshot = snapshot
+            self.store.save(task)
+        return tasks
+
     def add_tasks(self, tasks: list[CodingTask]) -> list[CodingTask]:
         """校验并追加任务；新任务可以依赖已持久化的历史节点。"""
         existing_tasks = self.store.list_all()
@@ -124,6 +150,8 @@ class TaskGraph:
             raise ValueError(f"task requires agent '{task.agent_type}', got '{owner}'")
         if not self.can_start(task_id):
             raise ValueError("task is blocked")
+        if task.agent_type == "code-implementer" and any(candidate.id != task_id and candidate.agent_type == "code-implementer" and candidate.status is TaskStatus.in_progress for candidate in self.store.list_all()):
+            raise ValueError("another code-implementer task is already in progress")
         task.owner = owner
         task.status = TaskStatus.in_progress
         self.store.save(task)

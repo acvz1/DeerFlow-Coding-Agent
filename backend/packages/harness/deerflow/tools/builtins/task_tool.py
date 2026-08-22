@@ -48,6 +48,7 @@ from deerflow.subagents.worktree_integrity import (
     capture_worktree_fingerprint,
 )
 from deerflow.task_graph.factory import create_task_graph
+from deerflow.tools.builtins.worktree_tool import ReviewSnapshotError, create_review_snapshot
 from deerflow.tools.types import Runtime
 from deerflow.trace_context import (
     DEERFLOW_TRACE_METADATA_KEY,
@@ -483,8 +484,8 @@ async def task_tool(
                 if thread_data is None:
                     raise RuntimeError("thread_data is required when using a coding worktree")
                 thread_data = dict(thread_data)
-                thread_data["workspace_path"] = coding_task.worktree
-                coding_worktree = coding_task.worktree
+                coding_worktree = getattr(coding_task, "review_snapshot", None) or coding_task.worktree
+                thread_data["workspace_path"] = coding_worktree
                 prompt = f"{_CODING_WORKSPACE_INSTRUCTION}\n\n{prompt}"
                 if config.workspace_access == "read_only":
                     read_only_fingerprint = await asyncio.to_thread(capture_worktree_fingerprint, coding_worktree)
@@ -607,9 +608,14 @@ async def task_tool(
                         current_fingerprint = await asyncio.to_thread(capture_worktree_fingerprint, coding_worktree)
                         if current_fingerprint != read_only_fingerprint:
                             raise WorktreeIntegrityError(f"Read-only subagent '{subagent_type}' changed the coding worktree")
+                    if coding_graph is not None and getattr(coding_task, "agent_type", None) == "code-implementer" and coding_task.worktree:
+                        reviewer_ids = coding_graph.get_direct_pending_reviewer_ids(coding_task_id)
+                        if reviewer_ids:
+                            review_snapshot = await create_review_snapshot(coding_task.worktree, coding_task_id, runtime)
+                            coding_graph.bind_review_snapshot(reviewer_ids, review_snapshot)
                     if coding_graph is not None:
                         coding_graph.complete(coding_task_id, artifact=artifact_payload)
-                except (CodingArtifactError, WorktreeIntegrityError, ValueError) as exc:
+                except (CodingArtifactError, WorktreeIntegrityError, ReviewSnapshotError, ValueError) as exc:
                     error = f"Coding subagent contract failed: {exc}"
                     await aemit_custom_event(
                         {

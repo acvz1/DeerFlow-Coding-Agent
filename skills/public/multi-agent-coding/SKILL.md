@@ -6,6 +6,7 @@ allowed-tools:
   - submit_task_plan
   - create_coding_worktree
   - recover_coding_task
+  - restore_coding_checkpoint
   - continue_after_review
   - task
 ---
@@ -22,7 +23,8 @@ allowed-tools:
    - `review_only`：只审查指定代码快照；
    - `implement_and_review`：分析、实现、审查；缺省时使用此值。
 3. `review_only` 必须先问清用户要审查的仓库。当前 Worktree 从该仓库已提交的 `HEAD` 创建；未提交改动不属于审查输入。
-4. 缺字段或 `open_questions` 会影响安全执行时，停止并让用户确认；不得自行补全需求。
+4. 用户提供的 Windows 绝对路径（如 `D:\\Project\\app`）是有效的仓库输入，不能因为 Lead 自己运行在 Linux/WSL 视角就要求用户换成 `/mnt/...`、上传副本或重新挂载。`create_coding_worktree` 会在 WSL Gateway 中自动完成 `D:\\... -> /mnt/d/...` 映射；应直接保留用户原始路径调用该工具，并以工具实际校验结果为准。
+5. 缺字段或 `open_questions` 会影响安全执行时，停止并让用户确认；不得自行补全需求。
 
 ## Approval Gate
 
@@ -39,7 +41,11 @@ allowed-tools:
 
 批准后调用一次 `submit_task_plan(coding_brief, tasks)`；必须传入完整原始 `coding_brief`。服务端会持久化它，使每个新子 Agent 都能重新读取用户目标，而不是依赖 Lead 对话记忆。
 
-按 `workflow_type` 使用以下稳定任务计划：
+小需求按 `workflow_type` 使用以下稳定任务计划。复杂需求则由 Lead 先把 `coding_brief` 拆成范围明确的业务单元，在用户批准后一次性提交完整 DAG；不得在 Analyzer 返回后未经用户批准临时扩任务。
+
+复杂实现需求中，每个业务单元使用 `analysis-{unit} -> implement-{unit} -> review-{unit}`。各 `analysis-*` 可独立准备；每个 `implement-*` 必须依赖自己的 `analysis-*`，并按计划顺序依赖前一个 `implement-*`，保证同一 Worktree 同时只有一个写入者。每个 `review-*` 依赖自己的 `implement-*`；Implementer 完成后，后端会自动生成稳定 Git 审查快照并绑定直接下游 Reviewer，所以 Reviewer 审查上一单元时，下一个 Implementer 可以继续在主 Worktree 工作。
+
+小需求模板如下：
 
 ### `analyze_only`
 
@@ -83,13 +89,21 @@ allowed-tools:
 
 ## Technical Failure Recovery
 
-子 Agent 超时、取消、异常或 Artifact 校验失败时，对应 CodingTask 会变为 `failed`。调用 `ask_clarification`：
+子 Agent 超时、取消、异常或 Artifact 校验失败时，对应 CodingTask 会变为 `failed`。没有 `rollback_snapshot` 时，调用 `ask_clarification`：
 
 - `clarification_type`: `risk_confirmation`
 - `context`: `coding_task_recovery:{coding_task_id}`
 - `options`: `Retry failed task`、`Stop pipeline`
 
 只有用户匹配选择 `Retry failed task` 后，才调用 `recover_coding_task` 并重试同一任务。每次重试都需要新的人工确认。
+
+如果失败任务存在 `rollback_snapshot`，说明它属于 Review FAIL 后的 Fix 流程。先展示失败原因和将被丢弃的未提交修改，再额外提供：
+
+- `clarification_type`: `risk_confirmation`
+- `context`: `coding_task_rollback:{coding_task_id}`
+- `options`: `Restore checkpoint and stop`、`Retry failed task`、`Stop pipeline`
+
+只有用户匹配选择 `Restore checkpoint and stop` 后，才调用 `restore_coding_checkpoint(coding_task_id=...)`。该工具会在隔离 Worktree 中执行清理并恢复 Fix 前的 checkpoint，任务状态仍保持 `failed`，保留失败记录；不得自动回退。
 
 ## Review FAIL Follow-up
 
@@ -100,7 +114,7 @@ allowed-tools:
 - `context`: `coding_review_followup:{review_task_id}`
 - `options`: `Reanalyze and fix`、`Stop pipeline`
 
-只有用户匹配选择 `Reanalyze and fix` 后，才调用 `continue_after_review(review_task_id=...)`。该工具会在原 Worktree 上追加：
+只有用户匹配选择 `Reanalyze and fix` 后，才调用 `continue_after_review(review_task_id=...)`。该工具会先为原 Worktree 创建 Fix 前 checkpoint，再在原 Worktree 上追加：
 
 ```text
 failed review

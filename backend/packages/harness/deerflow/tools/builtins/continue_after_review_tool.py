@@ -11,6 +11,7 @@ from deerflow.tools.builtins.recover_coding_task_tool import (
     _has_matching_approval,
     _runtime_messages,
 )
+from deerflow.tools.builtins.worktree_tool import create_worktree_checkpoint
 from deerflow.tools.types import Runtime
 
 REANALYZE_AND_FIX_OPTION = "Reanalyze and fix"
@@ -56,6 +57,8 @@ def continue_after_review(review_task_id: str, runtime: Runtime) -> str:
     if not review_task.worktree:
         raise ValueError("failed review task must have a bound worktree")
 
+    checkpoint = create_worktree_checkpoint(review_task.worktree, review_task_id, runtime)
+
     reanalysis_id = f"{review_task_id}-reanalysis"
     fix_id = f"{review_task_id}-fix"
     rereview_id = f"{review_task_id}-rereview"
@@ -84,10 +87,11 @@ def continue_after_review(review_task_id: str, runtime: Runtime) -> str:
     ]
     graph.add_tasks(followup_tasks)
     graph.bind_worktree([task.id for task in followup_tasks], review_task.worktree)
+    graph.bind_rollback_snapshot([task.id for task in followup_tasks], checkpoint)
 
     run_plan = graph.get_run_plan()
     graph.save_run_plan(
         run_plan.coding_brief,
         [*run_plan.task_ids, *(task.id for task in followup_tasks)],
     )
-    return f"Added review follow-up tasks: {reanalysis_id}, {fix_id}, {rereview_id}; bound to {review_task.worktree}"
+    return f"Added review follow-up tasks: {reanalysis_id}, {fix_id}, {rereview_id}; bound to {review_task.worktree}; checkpoint: {checkpoint}"

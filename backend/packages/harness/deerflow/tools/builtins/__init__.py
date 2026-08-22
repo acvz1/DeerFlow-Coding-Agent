@@ -3,6 +3,7 @@ from .continue_after_review_tool import continue_after_review
 from .list_uploaded_files_tool import list_uploaded_files
 from .present_file_tool import present_file_tool
 from .recover_coding_task_tool import recover_coding_task
+from .restore_coding_checkpoint_tool import restore_coding_checkpoint
 from .review_skill_package_tool import review_skill_package
 from .setup_agent_tool import setup_agent
 from .submit_task_plan_tool import submit_task_plan
@@ -16,6 +17,7 @@ __all__ = [
     "update_agent",
     "present_file_tool",
     "recover_coding_task",
+    "restore_coding_checkpoint",
     "continue_after_review",
     "review_skill_package",
     "ask_clarification_tool",
