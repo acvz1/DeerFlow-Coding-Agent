@@ -21,6 +21,10 @@ def _prompt_with_brief(prompt: str) -> str:
     return task_tool_module._CODING_BRIEF_INSTRUCTION.format(coding_brief=json.dumps(CODING_BRIEF, ensure_ascii=False, indent=2)) + f"\n\n{prompt}"
 
 
+def _prompt_with_previous_failure(prompt: str, reason: str) -> str:
+    return task_tool_module._PREVIOUS_FAILURE_INSTRUCTION.format(reason=reason) + f"\n\n{_prompt_with_brief(prompt)}"
+
+
 class FakeSubagentStatus(Enum):
     COMPLETED = "completed"
     FAILED = "failed"
@@ -44,7 +48,7 @@ def test_coding_task_is_claimed_before_delegation_and_completed_after_success(
     class FakeGraph:
         def claim(self, task_id: str, owner: str):
             calls.append(("claim", task_id, owner))
-            return SimpleNamespace(worktree=None)
+            return SimpleNamespace(worktree=None, last_failure_reason="previous pytest failure")
 
         def get_upstream_artifacts(self, task_id: str):
             calls.append(("upstream", task_id))
@@ -129,7 +133,7 @@ def test_coding_task_is_claimed_before_delegation_and_completed_after_success(
         ("create_graph", "thread-1", "alice"),
         ("claim", "task-1", "code-analyzer"),
         ("upstream", "task-1"),
-        ("execute", _prompt_with_brief("Inspect the code"), "tool-call-1"),
+        ("execute", _prompt_with_previous_failure("Inspect the code", "previous pytest failure"), "tool-call-1"),
         ("complete", "task-1", analysis_report),
     ]
 
@@ -412,6 +416,100 @@ def test_coding_task_worktree_is_passed_as_subagent_workspace_without_mutating_p
         ("complete", "task-1", None),
     ]
     assert fingerprints == ["E:/projectA/.worktrees/coding-run"] * 2
+
+
+def test_implementer_creates_review_snapshot_before_completing(monkeypatch):
+    calls: list[tuple] = []
+    parent_thread_data = {"workspace_path": "D:/sandbox/thread-1/user-data/workspace"}
+    runtime = _runtime()
+    runtime.state["thread_data"] = parent_thread_data
+
+    class FakeGraph:
+        def claim(self, task_id: str, owner: str):
+            calls.append(("claim", task_id, owner))
+            return SimpleNamespace(
+                agent_type="code-implementer",
+                worktree="E:/projectA/.worktrees/coding-run",
+                review_snapshot=None,
+            )
+
+        def get_upstream_artifacts(self, _task_id: str):
+            return []
+
+        def get_run_plan(self):
+            return SimpleNamespace(coding_brief=CODING_BRIEF)
+
+        def get_direct_pending_reviewer_ids(self, task_id: str):
+            calls.append(("reviewers", task_id))
+            return ["review-1"]
+
+        def bind_review_snapshot(self, task_ids, snapshot):
+            calls.append(("bind_snapshot", task_ids, snapshot))
+
+        def complete(self, task_id: str, artifact=None):
+            calls.append(("complete", task_id, artifact))
+
+    class FakeExecutor:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def execute_async(self, _prompt: str, task_id: str):
+            return task_id
+
+    implementation_report = {
+        "report_type": "implementation_report",
+        "summary": "implemented",
+        "changed_files": ["pricing.py"],
+        "key_changes": ["fixed formula"],
+        "tests": [{"command": "pytest", "status": "passed", "evidence": "1 passed"}],
+        "remaining_risks": [],
+        "review_focus": ["pricing calculation"],
+    }
+    result = SimpleNamespace(
+        status=FakeSubagentStatus.COMPLETED,
+        ai_messages=[],
+        result=json.dumps(implementation_report),
+        error=None,
+        stop_reason=None,
+        token_usage_records=[],
+        usage_reported=False,
+    )
+    config = SubagentConfig(name="code-implementer", description="Implement", system_prompt="Implement", timeout_seconds=10, artifact_type="implementation_report")
+
+    monkeypatch.setattr(task_tool_module, "_token_usage_cache_enabled", lambda _config: False)
+    monkeypatch.setattr(task_tool_module, "SubagentStatus", FakeSubagentStatus)
+    monkeypatch.setattr(task_tool_module, "get_available_subagent_names", lambda: ["code-implementer"])
+    monkeypatch.setattr(task_tool_module, "get_subagent_config", lambda _name: config)
+    monkeypatch.setattr(task_tool_module, "resolve_runtime_user_id", lambda _runtime: "alice")
+    monkeypatch.setattr(task_tool_module, "create_task_graph", lambda _thread_id, *, user_id: FakeGraph())
+    monkeypatch.setattr(task_tool_module, "SubagentExecutor", FakeExecutor)
+    monkeypatch.setattr(task_tool_module, "get_background_task_result", lambda _task_id: result)
+    monkeypatch.setattr(task_tool_module, "get_stream_writer", lambda: lambda _event: None)
+    monkeypatch.setattr(task_tool_module, "cleanup_background_task", lambda _task_id: None)
+    monkeypatch.setattr(task_tool_module, "_report_subagent_usage", lambda *_args: None)
+    monkeypatch.setattr("deerflow.tools.get_available_tools", lambda **_kwargs: [])
+
+    async def fake_snapshot(source_worktree, task_id, received_runtime):
+        calls.append(("snapshot", source_worktree, task_id, received_runtime))
+        return "E:/projectA/.worktrees/.review-snapshots/review-1"
+
+    async def ignore_event(_payload, *, writer):
+        del writer
+
+    monkeypatch.setattr(task_tool_module, "create_review_snapshot", fake_snapshot)
+    monkeypatch.setattr(task_tool_module, "aemit_custom_event", ignore_event)
+
+    coroutine = task_tool_module.task_tool.coroutine
+    assert coroutine is not None
+    asyncio.run(coroutine(runtime=runtime, description="Implement task", prompt="Fix pricing", subagent_type="code-implementer", tool_call_id="tool-call-1", coding_task_id="implementation-1"))
+
+    assert calls == [
+        ("claim", "implementation-1", "code-implementer"),
+        ("reviewers", "implementation-1"),
+        ("snapshot", "E:/projectA/.worktrees/coding-run", "implementation-1", runtime),
+        ("bind_snapshot", ["review-1"], "E:/projectA/.worktrees/.review-snapshots/review-1"),
+        ("complete", "implementation-1", implementation_report),
+    ]
 
 
 def test_coding_task_worktree_preparation_failure_marks_claimed_task_failed(

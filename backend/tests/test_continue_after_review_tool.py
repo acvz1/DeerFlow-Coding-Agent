@@ -79,6 +79,9 @@ def test_continue_after_failed_review_appends_pipeline_and_reuses_worktree(monke
         def bind_worktree(self, task_ids, worktree):
             captured["bound"] = (task_ids, worktree)
 
+        def bind_rollback_snapshot(self, task_ids, snapshot):
+            captured["checkpoint"] = (task_ids, snapshot)
+
         def get_run_plan(self):
             return SimpleNamespace(
                 coding_brief={"goal": "Fix", "acceptance_criteria": ["works"], "tasks": [{"id": "coding-review"}]},
@@ -95,6 +98,10 @@ def test_continue_after_failed_review_appends_pipeline_and_reuses_worktree(monke
     monkeypatch.setattr(
         "deerflow.tools.builtins.continue_after_review_tool.create_task_graph",
         lambda thread_id, *, user_id: captured.update(thread_id=thread_id, user_id=user_id) or FakeGraph(),
+    )
+    monkeypatch.setattr(
+        "deerflow.tools.builtins.continue_after_review_tool.create_worktree_checkpoint",
+        lambda worktree, task_id, runtime: captured.update(checkpoint_source=(worktree, task_id, runtime)) or "D:/repo/.worktrees/.checkpoints/checkpoint-1",
     )
 
     result = continue_after_review.func(
@@ -115,6 +122,11 @@ def test_continue_after_failed_review_appends_pipeline_and_reuses_worktree(monke
     assert captured["bound"] == (
         ["coding-review-reanalysis", "coding-review-fix", "coding-review-rereview"],
         "D:/repo/.worktrees/coding-run",
+    )
+    assert captured["checkpoint_source"][:2] == ("D:/repo/.worktrees/coding-run", "coding-review")
+    assert captured["checkpoint"] == (
+        ["coding-review-reanalysis", "coding-review-fix", "coding-review-rereview"],
+        "D:/repo/.worktrees/.checkpoints/checkpoint-1",
     )
     assert captured["run_plan"][1] == [
         "coding-analysis",

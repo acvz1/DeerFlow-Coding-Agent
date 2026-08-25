@@ -13,7 +13,9 @@
 - **三角色 Sub-Agent**：`code-analyzer`、`code-implementer`、`code-reviewer` 是源码内置角色，分别拥有只读分析、读写实现、只读审查工具边界。
 - **结构化 Agent 交接**：三类报告由 Pydantic 校验并持久化，下游任务从 DAG 自动取得已验证的上游产物，不依赖 Lead Agent 手工复制文本。
 - **持久化目标与 Task DAG**：将用户确认的 `coding_brief` 保存为线程级目标契约，并保存任务依赖、指定角色、领取者、执行状态、结构化产物、失败原因和 Worktree；子 Agent 新建上下文时会重新注入目标，支持进程重启后恢复。
-- **Git Worktree 隔离**：在用户选择的本地 Git 仓库中创建独立目录和分支，避免 Agent 修改污染主工作区。
+- **单写者审查流水线**：Lead 可把复杂需求拆成多个业务单元；Implementer 同一时间只允许一个写入共享 Worktree，每次实现完成后自动生成 Git 审查快照，让 Reviewer 在稳定代码现场检查上一单元。
+- **Fix checkpoint 与人工回退**：Review FAIL 进入修复前创建独立 Git checkpoint；若 Fix 失败，用户可选择保留现场重试，或明确确认后丢弃失败改动并恢复 checkpoint。
+- **Git Worktree 隔离**：在用户选择的本地 Git 仓库中创建独立目录和分支，避免 Agent 修改污染主工作区；Gateway 运行在 WSL 时，用户输入的 `D:\\...` 路径会自动映射为 `/mnt/d/...`。
 - **Human-in-the-loop**：执行计划、技术失败重试，以及审查 FAIL 后的重新分析→修复→复审都需要匹配当前请求的结构化人工确认。
 - **生产运行时接线**：Coding 工具接入 Gateway 的真实工具装配路径，外部 Worktree 可安全传递到子 Agent 中间件与文件工具。
 
@@ -31,6 +33,7 @@ GitHub Issue / coding_brief
        -> code-implementer -> implementation_report
        -> code-reviewer -> review_report(PASS / FAIL)
   -> Review FAIL 经人工批准后：reanalyze -> fix -> rereview（复用原 Worktree）
+     Fix 失败：保留现场重试，或经人工确认恢复 Fix 前 checkpoint
   -> Lead Agent 汇总 coding_run
 ```
 
@@ -101,6 +104,8 @@ make dev
 ```bash
 make up
 ```
+
+或者使用git bash：bash scripts/serve.sh --dev --daemon --skip-install
 
 ### 4. 发起 Coding Run
 
@@ -214,7 +219,7 @@ uv run pytest \
 - 任意本地磁盘仓库目前仅支持可信 `LocalSandboxProvider`；其他 Sandbox 会显式拒绝。
 - Worktree 基于已提交的 `HEAD` 创建，目标仓库未提交的修改不会自动复制进去。
 - 当前流程不会自动合并分支、推送远端或创建 PR。
-- 失败恢复会清空当前失败字段，尚未保存完整的多次尝试历史。
+- 失败恢复会保留最近一次失败原因，并在下一次子 Agent 启动时作为排查线索注入；尚未保存完整的多次尝试历史。
 - 只读角色采用“运行前后 Git 可见状态一致”的结果校验，而不是操作系统级只读挂载；被 `.gitignore` 忽略的测试缓存不计入持久代码改动。
 
 ## 致谢与许可证
